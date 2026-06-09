@@ -1,19 +1,39 @@
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.stattools import adfuller
+from scipy.stats import linregress
 
 # In finance, pairs trading is a market-neutral strategy that involves identifying two historically correlated assets (like stocks) and trading them based on the divergence of their price spread. The idea is to go long on the underperforming asset and short on the outperforming one, betting that the spread will revert to its historical mean.
 # In F1, we can think of two drivers on the same team as a "pair" — they should have similar performance since they have the same car. If one driver is consistently faster, we can analyze the "spread" in their lap times to see if it's mean-reverting (stationary). If it is, we can predict that if one driver has a bad lap, they might bounce back, while the other might have a worse lap next time.
 # This code computes the lap time spread between two drivers, tests if it's stationary (mean-reverting), and summarizes the results. It's analogous to analyzing the price spread between two stocks in a pairs trading strategy.
-def compute_spread(laps: pd.DataFrame, driver_a: str, driver_b: str) -> pd.DataFrame:
+def _align_drivers(laps: pd.DataFrame, driver_a: str, driver_b: str) -> pd.DataFrame:
     # Pivot so each driver is a column, rows aligned by lap number
     # Equivalent to aligning two price series on the same date index before computing spread
-    pivot = (
-        laps[laps["Driver"].isin([driver_a, driver_b])] #like filtering for two stocks in a dataset, asset prices/yields
+    return (
+        laps[laps["Driver"].isin([driver_a, driver_b])]  #like filtering for two stocks in a dataset, asset prices/yields
         .pivot(index="LapNumber", columns="Driver", values="LapTime_s")
         .dropna()
     )
-    pivot["spread"] = pivot[driver_a] - pivot[driver_b] # 
+
+
+def estimate_hedge_ratio(laps: pd.DataFrame, driver_a: str, driver_b: str) -> dict:
+    # Engle-Granger step 1: OLS regression of driver_a on driver_b
+    # Finds beta such that driver_a ≈ beta * driver_b + alpha
+    # Raw spread assumes beta=1 (A - B), but drivers aren't equally fast — beta corrects for that
+    # finance: same step before cointegration test; beta is the hedge ratio (how many units of B to short per unit of A)
+    pivot = _align_drivers(laps, driver_a, driver_b)
+    slope, intercept, r_value, _, _ = linregress(pivot[driver_b], pivot[driver_a])
+    return {
+        "hedge_ratio": round(slope, 4),   # beta — multiply driver_b by this before subtracting
+        "intercept": round(intercept, 4),
+        "r_squared": round(r_value ** 2, 4),  # how well driver_b explains driver_a's lap times
+    }
+
+
+def compute_spread(laps: pd.DataFrame, driver_a: str, driver_b: str, hedge_ratio: float = 1.0) -> pd.DataFrame:
+    pivot = _align_drivers(laps, driver_a, driver_b)
+    # hedge_ratio=1.0 gives raw spread; pass estimate_hedge_ratio()["hedge_ratio"] for OLS-adjusted spread
+    pivot["spread"] = pivot[driver_a] - hedge_ratio * pivot[driver_b]
     return pivot
 
 # ADF test checks if the spread is stationary (mean-reverting) — a key requirement for a pairs strategy to work
@@ -47,8 +67,9 @@ def spread_zscore(spread: pd.Series, window: int = 10) -> pd.Series:
 
 # the lag that is found in normal stocks is sort of negligent here due to radio instructions being almost immediate
 def pairs_summary(laps: pd.DataFrame, driver_a: str, driver_b: str) -> dict:
-    # Full pipeline: compute spread, test stationarity, return summary
-    spread_df = compute_spread(laps, driver_a, driver_b)
+    # Full Engle-Granger pipeline: step 1 OLS hedge ratio, step 2 ADF on residuals
+    hedge = estimate_hedge_ratio(laps, driver_a, driver_b)
+    spread_df = compute_spread(laps, driver_a, driver_b, hedge_ratio=hedge["hedge_ratio"])
     spread = spread_df["spread"]
     adf = adf_test(spread)
 
@@ -56,6 +77,8 @@ def pairs_summary(laps: pd.DataFrame, driver_a: str, driver_b: str) -> dict:
         "driver_a": driver_a,
         "driver_b": driver_b,
         "laps_compared": len(spread),
+        "hedge_ratio": hedge["hedge_ratio"],   # beta from OLS — how much faster one driver is relative to the other
+        "r_squared": hedge["r_squared"],
         "spread_mean": round(spread.mean(), 3),
         "spread_std": round(spread.std(), 3),
         "adf_stat": adf["adf_stat"],
