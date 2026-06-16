@@ -24,6 +24,7 @@ def fit_hmm(features: np.ndarray, n_states: int = 3, random_state: int = 42) -> 
         n_iter=100,
         random_state=random_state,
     )
+    # fit the HMM to the features — this is where the model learns the parameters of each hidden state (mean lap time, volatility) and the transition probabilities between states
     model.fit(features)
     return model
 
@@ -40,7 +41,11 @@ def label_states(model: GaussianHMM, n_states: int = 3) -> dict:
 def detect_regimes(laps: pd.DataFrame, driver: str, n_states: int = 3) -> pd.DataFrame:
     # Full pipeline: build features, fit HMM, predict state per lap, attach human-readable label
     features, lap_numbers = build_features(laps, driver)
-    model = fit_hmm(features, n_states=n_states)
+    # fit_hmm can fail to converge if the data is too short or not well-behaved, so we wrap it in a try-except and return an empty DataFrame if it fails
+    try:
+        model = fit_hmm(features, n_states=n_states)
+    except:
+        return pd.DataFrame()
     state_ids = model.predict(features)
     state_labels = label_states(model, n_states)
 
