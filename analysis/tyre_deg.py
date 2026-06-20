@@ -1,34 +1,51 @@
 import pandas as pd
 import numpy as np
-from scipy.stats import linregress
 
 
 def fit_stint_deg(stint_df: pd.DataFrame) -> dict:
-    # OLS regression: LapTime_s ~ TyreLife for a single stint
-    # slope (beta) = seconds lost per additional lap of tyre age — the degradation rate
-    # finance equivalent: beta in a factor model — how much does one unit of "age" move the output?
+    # Two-factor OLS: LapTime_s ~ TyreLife + LapNumber
+    # TyreLife captures tyre degradation; LapNumber proxies fuel load (cars lose ~1.6kg/lap)
+    # Separating them gives a cleaner deg signal — otherwise fuel effect bleeds into the tyre beta
+    # finance equivalent: multi-factor model isolating systematic risk sources
     if len(stint_df) < 3:
         return None
 
-    x = stint_df["TyreLife"].values
+    # Design matrix: column of 1s (intercept), TyreLife, LapNumber
+    X = np.column_stack([
+        np.ones(len(stint_df)),
+        stint_df["TyreLife"].values,
+        stint_df["LapNumber"].values,
+    ])
     y = stint_df["LapTime_s"].values
-    slope, intercept, r_value, _, _ = linregress(x, y)
+
+    # lstsq solves X @ coeffs ≈ y — minimises sum of squared residuals across all factors at once
+    coeffs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    alpha, beta_tyre, beta_fuel = coeffs
+
+    # R² computed manually — lstsq doesn't return it
+    y_pred = X @ coeffs
+    ss_res = np.sum((y - y_pred) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
     return {
-        "deg_rate": round(slope, 4),       # seconds lost per lap of tyre age
-        "base_pace": round(intercept, 3),  # predicted lap time at TyreLife=0 (fresh tyre)
-        "r_squared": round(r_value ** 2, 4),
+        "deg_rate": round(beta_tyre, 4),     # seconds lost per lap of tyre age (pure tyre effect)
+        "fuel_effect": round(beta_fuel, 4),  # typically negative — car gets faster as fuel burns off
+        "base_pace": round(alpha, 3),
+        "r_squared": round(r_squared, 4),
         "laps": len(stint_df),
     }
 
-
+# Fit degradation profile for a specific driver
 def driver_deg_profile(laps: pd.DataFrame, driver: str) -> pd.DataFrame:
     # Fit degradation curve for each stint a driver ran
     # Returns one row per stint: compound, deg rate, base pace, R²
     driver_laps = laps[laps["Driver"] == driver].copy()
     rows = []
 
+    # Group by stint and compound — each stint is a separate degradation profile, and different compounds degrade differently
     for (stint, compound), group in driver_laps.groupby(["Stint", "Compound"]):
+        #fit_stint_deg can return None if there are fewer than 3 laps in the stint, so we check for that and skip those stints
         result = fit_stint_deg(group.sort_values("TyreLife"))
         if result is None:
             continue
@@ -36,14 +53,15 @@ def driver_deg_profile(laps: pd.DataFrame, driver: str) -> pd.DataFrame:
             "Driver": driver,
             "Stint": stint,
             "Compound": compound,
+            #**result unpacks the dictionary returned by fit_stint_deg into individual columns in the output DataFrame
             **result,
         })
 
     return pd.DataFrame(rows)
 
-
+# Compute degradation profile for all drivers using a DataFrame of laps
 def field_deg_rates(laps: pd.DataFrame) -> pd.DataFrame:
-    # Deg profile for every driver — lets you compare who manages tyres best
+    # Fit degradation curves for all drivers and return a summary DataFrame
     # finance equivalent: cross-sectional factor exposure — who has the highest/lowest beta?
     profiles = []
     for driver in laps["Driver"].unique():
