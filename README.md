@@ -55,3 +55,16 @@ The two-factor model `LapTime = α + β_tyre × TyreLife + β_fuel × LapNumber 
 The honest limitation: within a single stint, TyreLife and LapNumber are nearly perfectly collinear — TyreLife ≈ LapNumber − pit_lap. When two regressors are collinear, the design matrix is ill-conditioned and the individual coefficient estimates become unstable, even if their sum is well-identified. The model gives approximately correct results on average but may produce unreliable β estimates for short stints.
 
 The more rigorous approach is a two-stage regression: estimate β_fuel once at the race level using cross-stint variation (where TyreLife resets at each pit stop but LapNumber does not, breaking the collinearity), subtract out the fuel effect, then fit per-stint deg curves on the residuals. The current implementation is a reasonable approximation and the right conceptual frame — this is the known limitation.
+
+---
+
+## Concept Summaries — Fluent Explanations
+
+**ADF test — why it tests for stationarity and why stationarity matters for pairs trading.**
+The core idea is that if the spread between two drivers isn't stationary it has no natural mean to revert to, making the pairs strategy meaningless. The ADF tests whether a unit root exists — a unit root means shocks are permanent rather than mean reverting.
+
+**OLS hedge ratio — why you regress one driver's lap times on the other's to get the hedge ratio rather than just taking the raw spread.**
+The raw spread assumes a 1:1 relationship between the two drivers. OLS finds the actual linear relationship that minimizes residual variance, giving you a spread that's more likely to be stationary.
+
+**Two-factor tyre model — why separating TyreLife and LapNumber matters.**
+Both variables increase monotonically through a stint. Without separating them you can't distinguish how much of the lap time increase is rubber degradation versus fuel burn off. Including both as separate regressors lets the OLS isolate each effect independently.
