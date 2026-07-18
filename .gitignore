@@ -23,6 +23,9 @@ env/
 *.h5
 *.pkl
 
+# FastF1 API response cache — regenerates automatically on first run
+.fastf1_cache/
+
 # Environment
 .env
 *.env
