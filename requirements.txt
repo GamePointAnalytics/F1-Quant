@@ -7,3 +7,4 @@ statsmodels
 jupyter
 fastf1
 hmmlearn
+pytest

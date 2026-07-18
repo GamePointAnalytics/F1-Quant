@@ -13,7 +13,7 @@ fastf1.Cache.enable_cache(str(CACHE_DIR))
 LAP_COLUMNS = [
     "Driver", "Team", "LapNumber", "LapTime",
     "Stint", "Compound", "TyreLife",
-    "Position", "IsAccurate",
+    "Position", "IsAccurate", "TrackStatus",
 ]
 
 # FastF1 provides a convenient way to load session data, and we can specify what data to load for efficiency
@@ -46,3 +46,15 @@ def get_teammate_laps(year: int, event: str, driver_a: str, driver_b: str) -> pd
     laps = get_accurate_laps(year, event)
     mask = laps["Driver"].isin([driver_a, driver_b])
     return laps[mask].reset_index(drop=True)
+
+
+# Round numbers + names for every points-paying race in a season, skipping test events
+# and sprint-only sessions — used to loop the analysis pipeline across a full season
+# instead of a single hand-picked race.
+def get_season_races(year: int) -> list[dict]:
+    schedule = fastf1.get_event_schedule(year, include_testing=False)
+    races = schedule[schedule["EventFormat"] != "testing"]
+    return [
+        {"round": int(row["RoundNumber"]), "event": row["EventName"]}
+        for _, row in races.iterrows()
+    ]

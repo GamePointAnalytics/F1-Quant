@@ -41,12 +41,14 @@ def label_states(model: GaussianHMM, n_states: int = 3) -> dict:
 def detect_regimes(laps: pd.DataFrame, driver: str, n_states: int = 3) -> pd.DataFrame:
     # Full pipeline: build features, fit HMM, predict state per lap, attach human-readable label
     features, lap_numbers = build_features(laps, driver)
-    # fit_hmm can fail to converge if the data is too short or not well-behaved, so we wrap it in a try-except and return an empty DataFrame if it fails
+    # Fitting or decoding can fail when the data is too short or a state is never observed
+    # (e.g. degenerate transmat_ row when a driver has no laps in one of the n_states) —
+    # wrap both steps and return an empty DataFrame rather than crashing the caller.
     try:
         model = fit_hmm(features, n_states=n_states)
-    except:
+        state_ids = model.predict(features)
+    except Exception:
         return pd.DataFrame()
-    state_ids = model.predict(features)
     state_labels = label_states(model, n_states)
 
     d = laps[laps["Driver"] == driver].copy().sort_values("LapNumber")
