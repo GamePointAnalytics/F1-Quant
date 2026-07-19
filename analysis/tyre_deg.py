@@ -7,6 +7,12 @@ def fit_stint_deg(stint_df: pd.DataFrame) -> dict:
     # TyreLife captures tyre degradation; LapNumber proxies fuel load (cars lose ~1.6kg/lap)
     # Separating them gives a cleaner deg signal — otherwise fuel effect bleeds into the tyre beta
     # finance equivalent: multi-factor model isolating systematic risk sources
+    #
+    # Some stints (e.g. around red flags) have TyreLife/Compound recorded as
+    # NaN for the whole stint — a design matrix with NaNs makes lstsq's SVD
+    # fail to converge rather than just returning a bad fit, so those rows are
+    # dropped before checking the minimum-laps guard, not after.
+    stint_df = stint_df[stint_df[["TyreLife", "LapNumber", "LapTime_s"]].apply(np.isfinite).all(axis=1)]
     if len(stint_df) < 3:
         return None
 
@@ -35,6 +41,34 @@ def fit_stint_deg(stint_df: pd.DataFrame) -> dict:
         "r_squared": round(r_squared, 4),
         "laps": len(stint_df),
     }
+
+
+def stint_residuals(stint_df: pd.DataFrame, time_column: str = "LapTime_s") -> pd.Series:
+    # What's left of a time column after removing tyre deg + fuel trend — the
+    # noise a mean-reversion model (e.g. Ornstein-Uhlenbeck) gets fit to.
+    # Same design matrix as fit_stint_deg, sorted chronologically (not by
+    # TyreLife) since lag-1 order matters here in a way it didn't for the OLS fit.
+    #
+    # time_column defaults to the whole lap time, but since the design matrix
+    # (TyreLife, LapNumber) is identical for every sector, this same function
+    # applied to Sector1Time_s/Sector2Time_s/Sector3Time_s gives residuals that
+    # sum exactly to the whole-lap residual (OLS is linear in y) — reused by
+    # analysis/sector_noise.py to estimate measurement noise externally.
+    stint_df = stint_df[stint_df[["TyreLife", "LapNumber", time_column]].apply(np.isfinite).all(axis=1)]
+    if len(stint_df) < 3:
+        return pd.Series(dtype=float)
+
+    ordered = stint_df.sort_values("LapNumber")
+    X = np.column_stack([
+        np.ones(len(ordered)),
+        ordered["TyreLife"].values,
+        ordered["LapNumber"].values,
+    ])
+    y = ordered[time_column].values
+
+    coeffs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    residuals = y - X @ coeffs
+    return pd.Series(residuals, index=ordered["LapNumber"].values)
 
 # Fit degradation profile for a specific driver
 def driver_deg_profile(laps: pd.DataFrame, driver: str) -> pd.DataFrame:
