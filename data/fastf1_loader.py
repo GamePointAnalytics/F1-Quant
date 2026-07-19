@@ -14,6 +14,7 @@ LAP_COLUMNS = [
     "Driver", "Team", "LapNumber", "LapTime",
     "Stint", "Compound", "TyreLife",
     "Position", "IsAccurate", "TrackStatus",
+    "Sector1Time", "Sector2Time", "Sector3Time",
 ]
 
 # FastF1 provides a convenient way to load session data, and we can specify what data to load for efficiency
@@ -28,6 +29,9 @@ def get_race_laps(year: int, event: str) -> pd.DataFrame:
     session = load_session(year, event, "R")
     laps = session.laps[LAP_COLUMNS].copy()
     laps["LapTime_s"] = laps["LapTime"].dt.total_seconds() # np.log(prices / prices.shift(1))
+    laps["Sector1Time_s"] = laps["Sector1Time"].dt.total_seconds()
+    laps["Sector2Time_s"] = laps["Sector2Time"].dt.total_seconds()
+    laps["Sector3Time_s"] = laps["Sector3Time"].dt.total_seconds()
     laps = laps.dropna(subset=["LapTime_s"])
     return laps
 
