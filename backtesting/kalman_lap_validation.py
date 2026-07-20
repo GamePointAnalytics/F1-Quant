@@ -1,13 +1,12 @@
 """
-Extends backtesting/lap_consistency_validation.py's train/test comparison
-with the Kalman-filtered version of the OU model, to test whether explicitly
+Walk-forward version of the free-R Kalman filter comparison: refit on an
+expanding training window, evaluate on the next block of held-out races,
+across several folds instead of one fixed split — to test whether explicitly
 separating process noise (Q) from measurement noise (R) closes the gap that
-made the static OU model lose to the trivial "predict 0" baseline for almost
-every driver.
+made the static OU model lose to the trivial "predict 0" baseline, and how
+much that result varies fold to fold rather than trusting a single split.
 
-Same 2023 season split as before (first 15 races train, last 7 test, all
-cached locally already). Four forecasts of the next lap's residual, scored
-by RMSE:
+Four forecasts of the next lap's residual, scored by RMSE:
   kalman      -> phi * x_hat_t   (x_hat_t is the FILTERED state estimate,
                                    not the raw noisy observation)
   static_ou   -> phi_static * x_t  (the original single-OLS-pass model)
@@ -29,6 +28,7 @@ from data.fastf1_loader import get_season_races, get_accurate_laps
 from analysis.lap_consistency import driver_residual_stints, fit_ou_params, build_lag_pairs
 from analysis.kalman_lap_state import fit_kalman_params, kalman_pass
 from backtesting.lap_consistency_validation import rmse, collect_driver_stints
+from backtesting.rolling_cv import expanding_folds
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -53,11 +53,11 @@ def build_kalman_forecast_pairs(residual_stints: list[pd.Series], phi: float, Q:
 
 def main():
     year = 2023
-    train_races = 15
+    min_train_races = 10
+    test_size = 3
 
     schedule = get_season_races(year)
-    print(f"Season {year}: {len(schedule)} races, train on first {train_races}, "
-          f"test on remaining {len(schedule) - train_races}\n")
+    print(f"Season {year}: {len(schedule)} races\n")
 
     print("Loading cached race laps...")
     all_laps = []
@@ -66,44 +66,45 @@ def main():
             all_laps.append(get_accurate_laps(year, race["event"]))
         except Exception as e:
             print(f"  [{race['event']}] SKIPPED — load failed: {e}")
-            all_laps.append(None)
+    all_laps = [l for l in all_laps if l is not None]
 
-    train_laps = [l for l in all_laps[:train_races] if l is not None]
-    test_laps = [l for l in all_laps[train_races:] if l is not None]
-    drivers = sorted(set().union(*[set(l["Driver"].unique()) for l in train_laps]))
+    folds = expanding_folds(all_laps, min_train=min_train_races, test_size=test_size)
+    print(f"{len(folds)} walk-forward folds (min_train={min_train_races} races, test_size={test_size} races)\n")
 
-    rows = []
-    for driver in drivers:
-        train_stints = collect_driver_stints(train_laps, driver)
-        test_stints = collect_driver_stints(test_laps, driver)
+    all_rows = []
+    for fold_index, (train_laps, test_laps) in enumerate(folds):
+        drivers = sorted(set().union(*[set(l["Driver"].unique()) for l in train_laps]))
+        for driver in drivers:
+            train_stints = collect_driver_stints(train_laps, driver)
+            test_stints = collect_driver_stints(test_laps, driver)
 
-        kalman_params = fit_kalman_params(train_stints)
-        static_params = fit_ou_params(train_stints)
-        if kalman_params is None or static_params is None:
-            continue
+            kalman_params = fit_kalman_params(train_stints)
+            static_params = fit_ou_params(train_stints)
+            if kalman_params is None or static_params is None:
+                continue
 
-        x_t, x_t1 = build_lag_pairs(test_stints)
-        kalman_x_hat, kalman_actual = build_kalman_forecast_pairs(
-            test_stints, kalman_params["phi"], kalman_params["Q"], kalman_params["R"]
-        )
-        if len(x_t) < 5 or len(kalman_x_hat) < 5:
-            continue
+            x_t, x_t1 = build_lag_pairs(test_stints)
+            kalman_x_hat, kalman_actual = build_kalman_forecast_pairs(
+                test_stints, kalman_params["phi"], kalman_params["Q"], kalman_params["R"]
+            )
+            if len(x_t) < 5 or len(kalman_x_hat) < 5:
+                continue
 
-        rows.append({
-            "driver": driver,
-            "train_pairs": static_params["n_pairs"],
-            "test_pairs": len(x_t),
-            "phi_kalman": kalman_params["phi"],
-            "Q": kalman_params["Q"],
-            "R": kalman_params["R"],
-            "phi_static": static_params["phi"],
-            "rmse_kalman": round(rmse(kalman_params["phi"] * kalman_x_hat, kalman_actual), 4),
-            "rmse_static_ou": round(rmse(static_params["phi"] * x_t, x_t1), 4),
-            "rmse_persistence": round(rmse(x_t, x_t1), 4),
-            "rmse_zero": round(rmse(np.zeros_like(x_t), x_t1), 4),
-        })
+            all_rows.append({
+                "fold": fold_index,
+                "driver": driver,
+                "test_pairs": len(x_t),
+                "phi_kalman": kalman_params["phi"],
+                "Q": kalman_params["Q"],
+                "R": kalman_params["R"],
+                "phi_static": static_params["phi"],
+                "rmse_kalman": round(rmse(kalman_params["phi"] * kalman_x_hat, kalman_actual), 4),
+                "rmse_static_ou": round(rmse(static_params["phi"] * x_t, x_t1), 4),
+                "rmse_persistence": round(rmse(x_t, x_t1), 4),
+                "rmse_zero": round(rmse(np.zeros_like(x_t), x_t1), 4),
+            })
 
-    results = pd.DataFrame(rows).sort_values("driver").reset_index(drop=True)
+    results = pd.DataFrame(all_rows)
     if results.empty:
         print("No results produced — not enough held-out data.")
         return
@@ -111,20 +112,22 @@ def main():
     RESULTS_DIR.mkdir(exist_ok=True)
     out_path = RESULTS_DIR / f"kalman_lap_validation_{year}.csv"
     results.to_csv(out_path, index=False)
+    print(f"Saved per-fold, per-driver results to {out_path}\n")
 
-    print(results.to_string(index=False))
-    print(f"\nSaved to {out_path}")
+    print("=== Per-fold field-wide mean RMSE ===")
+    cols = ["rmse_kalman", "rmse_static_ou", "rmse_persistence", "rmse_zero"]
+    print(results.groupby("fold")[cols].mean().round(4).to_string())
 
-    print("\n=== Field-wide mean RMSE (lower is better) ===")
-    print(f"  kalman:      {results['rmse_kalman'].mean():.4f}")
-    print(f"  static_ou:   {results['rmse_static_ou'].mean():.4f}")
-    print(f"  persistence: {results['rmse_persistence'].mean():.4f}")
-    print(f"  zero:        {results['rmse_zero'].mean():.4f}")
+    print("\n=== Across-fold summary: mean ± std of the per-fold means (lower is better) ===")
+    for col in cols:
+        per_fold_mean = results.groupby("fold")[col].mean()
+        print(f"  {col}: {per_fold_mean.mean():.4f} ± {per_fold_mean.std():.4f}  "
+              f"(per-fold: {per_fold_mean.round(4).tolist()})")
 
     n = len(results)
-    print(f"\nDrivers where kalman beats static_ou:   {(results['rmse_kalman'] < results['rmse_static_ou']).sum()}/{n}")
-    print(f"Drivers where kalman beats persistence: {(results['rmse_kalman'] < results['rmse_persistence']).sum()}/{n}")
-    print(f"Drivers where kalman beats zero:        {(results['rmse_kalman'] < results['rmse_zero']).sum()}/{n}")
+    print(f"\n(driver, fold) pairs where kalman beats static_ou:   {(results['rmse_kalman'] < results['rmse_static_ou']).sum()}/{n}")
+    print(f"(driver, fold) pairs where kalman beats persistence: {(results['rmse_kalman'] < results['rmse_persistence']).sum()}/{n}")
+    print(f"(driver, fold) pairs where kalman beats zero:        {(results['rmse_kalman'] < results['rmse_zero']).sum()}/{n}")
 
 
 if __name__ == "__main__":
