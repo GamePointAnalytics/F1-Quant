@@ -84,13 +84,29 @@ def main():
     combined.to_csv(out_path, index=False)
     print(f"\nSaved per-driver-race results to {out_path}")
 
-    print("\n=== Season summary ===")
+    print("\n=== Season summary (pooled across all races) ===")
     for variant in ["broken", "fixed"]:
         subset = combined[combined["variant"] == variant]
         agg = aggregate(subset)
         print(f"{variant:>7}: precision={agg['precision']} recall={agg['recall']} "
               f"f1={agg['f1']} tp={agg['tp']} fp={agg['fp']} fn={agg['fn']} tn={agg['tn']} "
               f"(scored {agg['driver_races_scored']} driver-races)")
+
+    # Regime detection doesn't have the single-fixed-split problem the other
+    # backtests do — the HMM is refit fresh per race, so each race is already
+    # its own independent fold, with no train/test leakage possible. What the
+    # pooled aggregate above hides is how much precision/recall *varies*
+    # race to race, which matters just as much for trusting the number.
+    print("\n=== Per-race distribution, 'fixed' variant (races-as-folds spread) ===")
+    fixed = combined[combined["variant"] == "fixed"]
+    per_race = fixed.groupby("event").apply(aggregate, include_groups=False)
+    per_race_df = pd.DataFrame(list(per_race), index=per_race.index)
+    for metric in ["precision", "recall", "f1"]:
+        values = per_race_df[metric].dropna()
+        if values.empty:
+            continue
+        print(f"  {metric}: mean={values.mean():.4f} std={values.std():.4f} "
+              f"min={values.min():.4f} max={values.max():.4f} (n={len(values)} races)")
 
 
 if __name__ == "__main__":
