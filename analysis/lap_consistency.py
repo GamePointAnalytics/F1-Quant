@@ -3,6 +3,9 @@ import pandas as pd
 
 from analysis.tyre_deg import stint_residuals
 from analysis.pairs import adf_test
+from analysis.shrinkage import fit_normal_hierarchical_prior, shrink_normal_estimate
+
+MIN_DRIVERS_FOR_SHRINKAGE = 5
 
 # ADF has weak power with only ~15-25 laps per stint (the usual stint length) —
 # ~8 laps is a floor below which the test isn't meaningful at all, not a
@@ -80,6 +83,13 @@ def fit_ou_params(stint_residual_list: list[pd.Series], min_pairs: int = 10) -> 
     resid = x_t1 - X @ coeffs
     resid_var = np.var(resid, ddof=2)
 
+    # Standard OLS coefficient-variance formula: Var(coeffs) = resid_var * (X'X)^-1.
+    # phi is the second column of X, so its variance is the [1,1] entry — this is
+    # what shrink_phi_across_drivers (analysis/shrinkage.py) needs to know how
+    # much to trust this driver's own phi vs. the population.
+    xtx_inv = np.linalg.inv(X.T @ X)
+    se_phi = np.sqrt(resid_var * xtx_inv[1, 1])
+
     if 0 < phi < 1:
         theta = -np.log(phi)
         sigma = np.sqrt(resid_var * 2 * theta / (1 - phi ** 2))
@@ -89,6 +99,7 @@ def fit_ou_params(stint_residual_list: list[pd.Series], min_pairs: int = 10) -> 
 
     return {
         "phi": round(float(phi), 4),
+        "se_phi": round(float(se_phi), 4),
         "intercept": round(float(intercept), 4),
         "theta": round(float(theta), 4) if theta == theta else theta,
         "sigma": round(float(sigma), 4) if sigma == sigma else sigma,
@@ -112,3 +123,33 @@ def season_consistency_profile(laps: pd.DataFrame) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("sigma").reset_index(drop=True)
+
+
+def shrink_phi_across_drivers(driver_params: pd.DataFrame) -> pd.DataFrame:
+    """
+    Takes one training fold's worth of per-driver (phi, se_phi) — e.g. rows
+    collected by calling fit_ou_params() per driver on a fold's training
+    stints — and pulls each driver's phi toward the population mean by an
+    amount proportional to how uncertain that driver's own estimate is
+    (analysis.shrinkage's Normal-Normal empirical-Bayes model).
+
+    A driver with few lag-pairs (large se_phi) shrinks hard toward the
+    population; a driver with hundreds of pairs (small se_phi) barely moves
+    from their own OLS estimate. Requires several drivers' worth of rows to
+    fit a meaningful population prior — with too few, the population "mean
+    and spread" would just be re-describing 1-2 individual noisy estimates.
+    """
+    if len(driver_params) < MIN_DRIVERS_FOR_SHRINKAGE:
+        result = driver_params.copy()
+        result["phi_shrunk"] = result["phi"]
+        return result
+
+    prior = fit_normal_hierarchical_prior(
+        driver_params["phi"].values, driver_params["se_phi"].values
+    )
+    result = driver_params.copy()
+    result["phi_shrunk"] = result.apply(
+        lambda row: shrink_normal_estimate(row["phi"], row["se_phi"], prior["mu"], prior["tau2"]),
+        axis=1,
+    )
+    return result

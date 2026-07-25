@@ -1,6 +1,10 @@
 import pandas as pd
 from statsmodels.stats.proportion import proportion_confint
 
+from analysis.shrinkage import fit_beta_binomial_prior, shrink_beta_binomial_rate
+
+MIN_TEAMS_FOR_SHRINKAGE = 5
+
 # Ergast's `status` field for a classified result. Categorized by cause so a
 # team's mechanical DNF rate isn't diluted by crashes (a driver/racing-incident
 # risk, not a car reliability signal) or by non-races (DSQ/withdrew/DNS, which
@@ -92,8 +96,51 @@ def team_reliability_rates(
 
 
 def predict_dnf_probability(rates: pd.DataFrame, team: str, fallback_rate: float) -> float:
-    """Per-team rate if we've seen enough of that team's races, else the field-wide average."""
+    """Per-team rate if we've seen enough of that team's races, else the field-wide average.
+
+    This is a discrete, step-function version of shrinkage — full trust in the
+    team's own rate above the cutoff, full fallback below it. See
+    team_reliability_rates_shrunk() for the continuous version, which pulls
+    every team's rate toward the population by an amount proportional to its
+    own sample size rather than switching at a hard threshold.
+    """
     match = rates[rates["team"] == team]
     if match.empty or match.iloc[0]["starts"] < 5:
         return fallback_rate
     return match.iloc[0]["dnf_rate"]
+
+
+def team_reliability_rates_shrunk(
+    results: pd.DataFrame,
+    target_categories: frozenset = frozenset({"mechanical"}),
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """
+    Same per-team rates as team_reliability_rates(), plus a `dnf_rate_shrunk`
+    column: each team's rate pulled toward the population mean by an amount
+    proportional to how little data that team has (Beta-Binomial
+    empirical-Bayes shrinkage, analysis.shrinkage.fit_beta_binomial_prior).
+    Fits one population prior across all teams at once, then applies it
+    per-team — a continuous alternative to predict_dnf_probability()'s
+    hard `starts < 5` cutoff.
+    """
+    rates = team_reliability_rates(results, target_categories=target_categories, alpha=alpha)
+    if len(rates) < MIN_TEAMS_FOR_SHRINKAGE:
+        rates["dnf_rate_shrunk"] = rates["dnf_rate"]
+        return rates
+
+    target_counts = (rates["dnf_rate"] * rates["starts"]).round().astype(int)
+    prior = fit_beta_binomial_prior(target_counts.values, rates["starts"].values)
+    rates["dnf_rate_shrunk"] = [
+        round(shrink_beta_binomial_rate(t, s, prior["alpha"], prior["beta"]), 4)
+        for t, s in zip(target_counts, rates["starts"])
+    ]
+    return rates
+
+
+def predict_dnf_probability_shrunk(rates_shrunk: pd.DataFrame, team: str, fallback_rate: float) -> float:
+    """Like predict_dnf_probability(), but reading the continuously-shrunk rate."""
+    match = rates_shrunk[rates_shrunk["team"] == team]
+    if match.empty:
+        return fallback_rate
+    return match.iloc[0]["dnf_rate_shrunk"]

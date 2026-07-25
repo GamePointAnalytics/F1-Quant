@@ -41,6 +41,8 @@ from prediction.reliability import (
     categorize_status,
     team_reliability_rates,
     predict_dnf_probability,
+    team_reliability_rates_shrunk,
+    predict_dnf_probability_shrunk,
 )
 from backtesting.rolling_cv import expanding_folds
 
@@ -57,6 +59,7 @@ def brier_score(predicted: pd.Series, actual: pd.Series) -> float:
 
 def evaluate_target(train: pd.DataFrame, test: pd.DataFrame, target_categories: frozenset):
     rates = team_reliability_rates(train, target_categories=target_categories)
+    rates_shrunk = team_reliability_rates_shrunk(train, target_categories=target_categories)
     fallback_rate = rates["dnf_rate"].mul(rates["starts"]).sum() / rates["starts"].sum()
 
     # Only score rows where the outcome is unambiguous under this target:
@@ -70,6 +73,9 @@ def evaluate_target(train: pd.DataFrame, test: pd.DataFrame, target_categories: 
     team_pred = scoreable["constructorId"].apply(
         lambda team: predict_dnf_probability(rates, team, fallback_rate)
     )
+    team_shrunk_pred = scoreable["constructorId"].apply(
+        lambda team: predict_dnf_probability_shrunk(rates_shrunk, team, fallback_rate)
+    )
     naive_pred = pd.Series(fallback_rate, index=scoreable.index)
     zero_pred = pd.Series(0.0, index=scoreable.index)
 
@@ -77,10 +83,11 @@ def evaluate_target(train: pd.DataFrame, test: pd.DataFrame, target_categories: 
         "n_scoreable": len(scoreable),
         "n_positive": int(actual.sum()),
         "brier_team_model": brier_score(team_pred, actual),
+        "brier_team_shrunk": brier_score(team_shrunk_pred, actual),
         "brier_naive_global": brier_score(naive_pred, actual),
         "brier_always_zero": brier_score(zero_pred, actual),
     }
-    return metrics, rates
+    return metrics, rates_shrunk
 
 
 def main():
@@ -111,6 +118,7 @@ def main():
             fold_rows[label].append(metrics)
             print(f"  [{label}] scoreable={metrics['n_scoreable']} positive={metrics['n_positive']} "
                   f"team_model={metrics['brier_team_model']:.5f} "
+                  f"team_shrunk={metrics['brier_team_shrunk']:.5f} "
                   f"naive_global={metrics['brier_naive_global']:.5f} "
                   f"always_zero={metrics['brier_always_zero']:.5f}")
             if label == "car_dnf":
@@ -121,7 +129,7 @@ def main():
     for label in TARGETS:
         fold_df = pd.DataFrame(fold_rows[label])
         print(f"\n[{label}]")
-        for col in ["brier_team_model", "brier_naive_global", "brier_always_zero"]:
+        for col in ["brier_team_model", "brier_team_shrunk", "brier_naive_global", "brier_always_zero"]:
             print(f"  {col}: {fold_df[col].mean():.5f} ± {fold_df[col].std():.5f}  "
                   f"(per-fold: {fold_df[col].round(5).tolist()})")
 
