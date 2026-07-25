@@ -118,7 +118,10 @@ def main():
     results.to_csv(out_path, index=False)
     print(f"Saved per-fold, per-driver results to {out_path}\n")
 
-    print("=== R: sector-derived vs free-MLE-estimated, mean across folds (the headline comparison) ===")
+    print("=== Per-driver, per-fold detail (phi/Q/R_sector/R_free + RMSE) ===")
+    print(results.to_string(index=False))
+
+    print("\n=== R: sector-derived vs free-MLE-estimated, mean across folds (the headline comparison) ===")
     print(results.groupby("driver")[["R_sector", "R_free_mle"]].mean().round(4).to_string())
 
     print("\n=== Per-fold field-wide mean RMSE ===")

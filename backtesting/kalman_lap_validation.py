@@ -114,7 +114,10 @@ def main():
     results.to_csv(out_path, index=False)
     print(f"Saved per-fold, per-driver results to {out_path}\n")
 
-    print("=== Per-fold field-wide mean RMSE ===")
+    print("=== Per-driver, per-fold detail (phi/Q/R + RMSE) ===")
+    print(results.to_string(index=False))
+
+    print("\n=== Per-fold field-wide mean RMSE ===")
     cols = ["rmse_kalman", "rmse_static_ou", "rmse_persistence", "rmse_zero"]
     print(results.groupby("fold")[cols].mean().round(4).to_string())
 
